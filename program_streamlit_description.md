@@ -1,0 +1,9 @@
+- use docs folder for documentation
+- must be contained in single python file
+- must use openrouter model stepfun/step-3.5-flash:free to make a summary of user provided text.
+- must use streamlit for a web interface 
+- must take openrouter API key from a file named "openrouter_api_key.txt".
+- must show the summary generated
+- must be the place where to write a summary receivers name
+- must be a button to send a generated summary by email
+- must be the place where to write the letter receivers name
