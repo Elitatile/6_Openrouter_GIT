@@ -2,8 +2,17 @@
 - must be contained in single python file
 - must use openrouter model stepfun/step-3.5-flash:free to make a summary of user provided text.
 - must use streamlit for a web interface 
+- must use ollama gemma3:4b model
 - must take openrouter API key from a file named "openrouter_api_key.txt".
-- must show the summary generated
-- must be the place where to write a summary receivers name
+- must generate the summary
+- Below the summary generated, there must be a button to „Generate from scratch“ 
+- the model must regenerate the summary once again after the button „Generate from scratch“ is pressed
+- Below the summary generated, there must be another one button to „Rewrite my draft“
+- the button "Rewrite my draft" must have options to press in order to select the action what the model should do with the summary:
+- options: Shorten, Expand, More polite, More direct, Fix grammar.
+- the model must rewrite the summary after the button „Rewrite my draft“ is pressed (makes the draft shorter or longer, checks draft's grammar, makes the draft more polite or assertive, ect.)
+- the buttons „Generate from scratch“ and „Rewrite my draft“ must be in a line one below another.
+- The result must be shown in a different tab for a letter without any comments in order to compare before and after the summary.
+- Below must be the place where to write a summary receivers name
 - must be a button to send a generated summary by email
 - must be the place where to write the letter receivers name

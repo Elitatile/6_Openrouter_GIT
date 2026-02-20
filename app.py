@@ -1,18 +1,22 @@
 import streamlit as st
 from openai import OpenAI
-import os
+import requests
 
 # Initialize session state variables
 if "generated_summary" not in st.session_state:
     st.session_state.generated_summary = None
-if "generated_letter" not in st.session_state:
-    st.session_state.generated_letter = None
+if "rewritten_summary" not in st.session_state:
+    st.session_state.rewritten_summary = None
+if "original_text" not in st.session_state:
+    st.session_state.original_text = None
+if "show_rewrite_options" not in st.session_state:
+    st.session_state.show_rewrite_options = False
 
 # Set up page configuration
 st.set_page_config(
-    page_title="AI Assistant",
-    page_icon="🤖",
-    layout="centered",
+    page_title="AI Summary Generator",
+    page_icon="📝",
+    layout="wide",
     initial_sidebar_state="expanded"
 )
 
@@ -23,10 +27,7 @@ st.markdown("""
         padding: 2rem;
     }
     .stButton > button {
-        width: 100%;
         padding: 10px;
-        background-color: #0000FF;
-        color: white;
         font-weight: bold;
     }
     .stTabs [data-baseweb="tab-list"] button {
@@ -36,9 +37,27 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # Title
-st.title("🤖 AI Assistant")
-st.markdown("Text Summarizer & Email Response Generator")
+st.title("📝 AI Summary Generator")
+st.markdown("Advanced Text Summarization with OpenRouter & Ollama")
 st.markdown("---")
+
+# Status indicators
+with st.sidebar:
+    st.markdown("### ℹ️ System Status")
+    st.success("✅ OpenRouter connected")
+    
+    # Check Ollama connection
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "gemma3:4b", "prompt": "test", "stream": False},
+            timeout=2
+        )
+        st.success("✅ Ollama (gemma3:4b) running")
+    except:
+        st.warning("⚠️ Ollama not detected (rewriting features may not work)")
+    
+    st.markdown("---")
 
 # Load API key from file
 api_key_file = "openrouter_api_key.txt"
@@ -54,497 +73,298 @@ except FileNotFoundError:
     st.stop()
 
 # Initialize OpenRouter client
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=api_key,
-    default_headers={
-        "HTTP-Referer": "http://localhost:8501",
-        "X-Title": "Text Summarizer",
+try:
+    openrouter_client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+        default_headers={
+            "HTTP-Referer": "http://localhost:8501",
+            "X-Title": "Summary Generator",
+        }
+    )
+except Exception as e:
+    st.error(f"❌ Failed to initialize OpenRouter client: {str(e)}")
+    st.stop()
+
+# Function to call Ollama gemma3:4b model
+def call_ollama_model(prompt):
+    """Call Ollama gemma3:4b model for local processing"""
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "gemma3:4b",
+                "prompt": prompt,
+                "stream": False
+            }
+        )
+        if response.status_code == 200:
+            return response.json().get("response", "")
+        else:
+            return None
+    except Exception as e:
+        st.warning(f"⚠️ Ollama connection failed: {str(e)}. Make sure Ollama is running on localhost:11434")
+        return None
+
+# Function to generate summary using OpenRouter
+def generate_summary_openrouter(text, length="medium"):
+    """Generate summary using OpenRouter's stepfun/step-3.5-flash:free model"""
+    
+    length_instructions = {
+        "short": "Summarize this text in 1-3 sentences.",
+        "medium": "Summarize this text in 3-5 sentences.",
+        "long": "Summarize this text in 5-10 sentences."
     }
+    
+    system_prompt = f"""You are a professional text summarizer. {length_instructions.get(length, length_instructions['medium'])}
+Keep the summary clear, concise, and capture the main points. Do not add any comments or explanations."""
+    
+    try:
+        # Debug: Check if client is initialized
+        if not openrouter_client:
+            st.error("❌ OpenRouter client not initialized. Please check your API key.")
+            return None
+            
+        response = openrouter_client.chat.completions.create(
+            model="stepfun/step-3.5-flash:free",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.7,
+            top_p=0.9,
+            max_tokens=500
+        )
+        
+        if response and response.choices:
+            return response.choices[0].message.content
+        else:
+            st.error("❌ Empty response from OpenRouter API")
+            return None
+            
+    except requests.exceptions.ConnectionError:
+        st.error("❌ Connection Error: Cannot reach OpenRouter API. Please check your internet connection.")
+        return None
+    except ValueError as e:
+        if "403" in str(e) or "Forbidden" in str(e):
+            st.error("❌ API Key Error: Your OpenRouter API key is invalid or expired. Please check 'openrouter_api_key.txt'")
+        elif "401" in str(e) or "Unauthorized" in str(e):
+            st.error("❌ Authentication Error: Invalid API key. Please verify 'openrouter_api_key.txt'")
+        else:
+            st.error(f"❌ API Error: {str(e)}")
+        return None
+    except Exception as e:
+        error_msg = str(e)
+        st.error(f"❌ Error generating summary: {error_msg}")
+        with st.expander("📋 Troubleshooting"):
+            st.markdown("""
+            **Possible causes:**
+            - Invalid or expired OpenRouter API key
+            - API rate limit exceeded
+            - Model not available
+            - No internet connection
+            
+            **Solutions:**
+            1. Verify your API key in `openrouter_api_key.txt`
+            2. Check OpenRouter account for available credits
+            3. Try again in a few moments
+            """)
+        return None
+
+# Function to rewrite summary
+def rewrite_summary(text, action):
+    """Rewrite summary using Ollama gemma3:4b model with specified action"""
+    
+    action_prompts = {
+        "Shorten": "Make this text shorter and more concise while keeping the main points:",
+        "Expand": "Expand this text with more details and explanations:",
+        "More polite": "Rewrite this text to be more polite and courteous:",
+        "More direct": "Rewrite this text to be more direct and assertive:",
+        "Fix grammar": "Fix all grammar and spelling errors in this text:"
+    }
+    
+    prompt = f"{action_prompts.get(action, action)}\n\n{text}"
+    
+    result = call_ollama_model(prompt)
+    
+    if result:
+        return result.strip()
+    else:
+        st.error("❌ Failed to rewrite summary. Make sure Ollama with gemma3:4b is running on localhost:11434")
+        return None
+
+
+# Main content area
+st.markdown("### Enter your text to summarize:")
+
+# Text input
+user_text = st.text_area(
+    "Text to summarize:",
+    height=200,
+    placeholder="Paste your text here...",
+    label_visibility="collapsed"
 )
 
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ Settings")
+# Generate button
+if st.button("✨ Generate Summary", type="primary", use_container_width=True):
+    if not user_text.strip():
+        st.warning("⚠️ Please enter some text to summarize.")
+    else:
+        st.session_state.original_text = user_text
+        with st.spinner("🔄 Generating summary from OpenRouter API..."):
+            st.info("📡 Sending to OpenRouter API (stepfun/step-3.5-flash:free)...")
+            summary = generate_summary_openrouter(user_text, "medium")
+            if summary:
+                st.session_state.generated_summary = summary
+                st.success("✅ Summary generated successfully!")
+                st.rerun()
+            else:
+                st.error("❌ Failed to generate summary. Please check the error details above.")
+
+# Display summary if generated
+if st.session_state.generated_summary:
+    st.markdown("---")
+    st.markdown("### 📋 Generated Summary:")
+    st.info(st.session_state.generated_summary)
     
-    st.markdown("### Summary Settings")
-    summary_length = st.radio(
-        "Select summary length:",
-        ["Short (1-3 sentences)", "Medium (3-5 sentences)", "Long (5-10 sentences)"],
-        index=1
-    )
+    # Buttons in a line (stacked vertically)
+    col1, col2 = st.columns(2)
     
-    st.markdown("### Email Settings")
-    email_tone = st.selectbox(
-        "Select email tone:",
-        ["Professional", "Friendly", "Formal", "Casual", "Apologetic"]
-    )
+    with col1:
+        if st.button("🔄 Generate from Scratch", use_container_width=True):
+            with st.spinner("🔄 Regenerating summary from scratch..."):
+                new_summary = generate_summary_openrouter(st.session_state.original_text, "medium")
+                if new_summary:
+                    st.session_state.generated_summary = new_summary
+                    st.session_state.rewritten_summary = None
+                    st.rerun()
     
-    email_length = st.radio(
-        "Select email length:",
-        ["Brief (2-3 lines)", "Medium (3-5 lines)", "Detailed (5-8 lines)"],
-        index=1
-    )
+    with col2:
+        if st.button("✏️ Rewrite my Draft", use_container_width=True):
+            st.session_state.show_rewrite_options = True
+            st.rerun()
+    
+    # Show rewrite options if button was clicked
+    if st.session_state.show_rewrite_options:
+        st.markdown("### Choose Rewrite Action:")
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            rewrite_action = st.selectbox(
+                "How would you like to rewrite the summary?",
+                ["Shorten", "Expand", "More polite", "More direct", "Fix grammar"],
+                key="rewrite_action_select"
+            )
+        
+        with col2:
+            if st.button("Apply", type="primary"):
+                with st.spinner(f"✏️ {rewrite_action}ing summary..."):
+                    rewritten = rewrite_summary(st.session_state.generated_summary, rewrite_action)
+                    if rewritten:
+                        st.session_state.rewritten_summary = rewritten
+                        st.session_state.show_rewrite_options = False
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to rewrite summary. Make sure Ollama with gemma3:4b is running.")
+
+# Create tabs for viewing
+if st.session_state.generated_summary or st.session_state.rewritten_summary:
+    st.markdown("---")
+    
+    if st.session_state.rewritten_summary:
+        tab1, tab2 = st.tabs(["📝 Original Summary", "🎯 Final Result"])
+    else:
+        tab1 = st.tabs(["📝 Summary"])[0]
+    
+    with tab1:
+        st.markdown("### Original Generated Summary")
+        st.code(st.session_state.generated_summary, language="text")
+        st.metric("Length", f"{len(st.session_state.generated_summary)} characters")
+    
+    if st.session_state.rewritten_summary:
+        with tab2:
+            st.markdown("### Final Result")
+            st.code(st.session_state.rewritten_summary, language="text")
+            st.metric("Length", f"{len(st.session_state.rewritten_summary)} characters")
     
     st.markdown("---")
-    st.markdown("### 📚 About")
-    st.markdown("""
-    This app uses **OpenRouter** with the **Step 3.5 Flash** model 
-    for:
-    - Text summarization
-    - Email response generation
     
-    **Features:**
-    - Adjustable summary length
-    - Multiple email tones
-    - Fast processing
-    - Clean interface
-    """)
-
-# Map selection to prompts
-length_mapping = {
-    "Short (1-3 sentences)": "Summarize this text in 1-3 sentences.",
-    "Medium (3-5 sentences)": "Summarize this text in 3-5 sentences.",
-    "Long (5-10 sentences)": "Summarize this text in 5-10 sentences."
-}
-
-email_length_mapping = {
-    "Brief (2-3 lines)": "Write a brief response in 2-3 lines.",
-    "Medium (3-5 lines)": "Write a response in 3-5 lines.",
-    "Detailed (5-8 lines)": "Write a detailed response in 5-8 lines."
-}
-
-email_tone_mapping = {
-    "Professional": "professional and business-appropriate",
-    "Friendly": "warm and friendly",
-    "Formal": "formal and respectful",
-    "Casual": "casual and relaxed",
-    "Apologetic": "apologetic and understanding"
-}
-
-# Create tabs for different features
-tab1, tab2 = st.tabs(["📝 Summarizer", "📧 Email Response"])
-
-# TAB 1: SUMMARIZER
-with tab1:
-    st.markdown("### Summarize Text")
-    st.markdown("Paste or type the text you want to summarize:")
+    # Email sending section
+    st.markdown("### 📧 Send Summary by Email")
     
-    user_text = st.text_area(
-        "Text to summarize:",
-        height=200,
-        placeholder="Paste your text here...",
-        label_visibility="collapsed"
-    )
-    
-    # Create columns for buttons
-    col1, col2 = st.columns([3, 1])
+    col1, col2 = st.columns(2)
     
     with col1:
-        summarize_button = st.button("✨ Summarize", type="primary", use_container_width=True, key="summarize_btn")
-    
-    with col2:
-        clear_button = st.button("🗑️ Clear", key="clear_btn")
-    
-    # Clear functionality
-    if clear_button:
-        st.rerun()
-    
-    # Summarize functionality
-    if summarize_button:
-        if not user_text.strip():
-            st.warning("⚠️ Please enter some text to summarize.")
-        else:
-            with st.spinner("🔄 Generating summary..."):
-                try:
-                    # Prepare the prompt
-                    length_instruction = length_mapping[summary_length]
-                    system_prompt = f"""You are a professional text summarizer. 
-{length_instruction}
-Keep the summary clear, concise, and capture the main points."""
-                    
-                    # Call OpenRouter API
-                    response = client.chat.completions.create(
-                        model="stepfun/step-3.5-flash:free",
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": system_prompt
-                            },
-                            {
-                                "role": "user",
-                                "content": user_text
-                            }
-                        ],
-                        temperature=0.7,
-                        top_p=0.9,
-                        max_tokens=500
-                    )
-                    
-                    # Display results
-                    summary = response.choices[0].message.content
-                    
-                    # Store in session state to persist across reruns
-                    st.session_state.generated_summary = summary
-                    
-                    st.markdown("---")
-                    st.markdown("### 📋 Generated Summary:")
-                    st.info(st.session_state.generated_summary)
-                    
-                    # Input for receiver name - These will persist now
-                    st.markdown("### 📬 Send Summary by Email:")
-                    summary_receiver_name = st.text_input(
-                        "Summary receiver's name:",
-                        placeholder="Enter the name of the recipient...",
-                        key="summary_receiver_name"
-                    )
-                    
-                    summary_receiver_email = st.text_input(
-                        "Recipient's email address:",
-                        placeholder="name@example.com",
-                        key="summary_receiver_email"
-                    )
-                    
-                    # Send button
-                    col1, col2, col3 = st.columns([1, 1, 2])
-                    
-                    with col1:
-                        send_summary_button = st.button("📧 Send Summary", type="primary", key="send_summary_btn")
-                    
-                    with col2:
-                        copy_summary_button = st.button("📋 Copy", key="copy_summary_btn")
-                    
-                    # Send functionality
-                    if send_summary_button:
-                        if not summary_receiver_name.strip():
-                            st.warning("⚠️ Please enter the recipient's name.")
-                        elif not summary_receiver_email.strip():
-                            st.warning("⚠️ Please enter the recipient's email address.")
-                        else:
-                            # Create formatted summary with receiver details
-                            formatted_summary = f"To: {summary_receiver_name}\nEmail: {summary_receiver_email}\n\n---\n\nSummary:\n\n{st.session_state.generated_summary}"
-                            
-                            st.success(f"✅ Summary prepared for: {summary_receiver_name} ({summary_receiver_email})")
-                            
-                            # Show formatted summary
-                            st.markdown("### 📝 Summary to Send:")
-                            st.code(formatted_summary, language="text")
-                            
-                            # Download option
-                            st.download_button(
-                                label="⬇️ Download Summary",
-                                data=formatted_summary,
-                                file_name=f"summary_for_{summary_receiver_name.replace(' ', '_')}.txt",
-                                mime="text/plain"
-                            )
-                    
-                    # Copy to clipboard
-                    if copy_summary_button:
-                        st.success("📋 Summary copied!")
-                        st.download_button(
-                            label="📄 Download Summary",
-                            data=st.session_state.generated_summary,
-                            file_name="summary.txt",
-                            mime="text/plain"
-                        )
-                    
-                    # Show metadata
-                    with st.expander("📊 Details"):
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Original length", f"{len(user_text)} chars")
-                        with col2:
-                            st.metric("Summary length", f"{len(st.session_state.generated_summary)} chars")
-                        with col3:
-                            compression_ratio = round((len(st.session_state.generated_summary) / len(user_text)) * 100, 1)
-                            st.metric("Compression", f"{compression_ratio}%")
-                    
-                except Exception as e:
-                    st.error(f"❌ Error generating summary: {str(e)}")
-                    st.markdown("**Please ensure:**")
-                    st.markdown("- Your OpenRouter API key is valid")
-                    st.markdown("- You have enough API credits")
-                    st.markdown("- You have internet connectivity")
-    
-    # Display stored summary if it exists (for persistent display)
-    elif st.session_state.generated_summary and not summarize_button:
-        st.markdown("---")
-        st.markdown("### 📋 Generated Summary:")
-        st.info(st.session_state.generated_summary)
-        
-        # Input for receiver name - These will persist now
-        st.markdown("### 📬 Send Summary by Email:")
         summary_receiver_name = st.text_input(
             "Summary receiver's name:",
-            placeholder="Enter the name of the recipient...",
+            placeholder="Enter recipient's name...",
             key="summary_receiver_name"
         )
-        
-        summary_receiver_email = st.text_input(
-            "Recipient's email address:",
-            placeholder="name@example.com",
-            key="summary_receiver_email"
-        )
-        
-        # Send button
-        col1, col2, col3 = st.columns([1, 1, 2])
-        
-        with col1:
-            send_summary_button = st.button("📧 Send Summary", type="primary", key="send_summary_btn")
-        
-        with col2:
-            copy_summary_button = st.button("📋 Copy", key="copy_summary_btn")
-        
-        # Send functionality
-        if send_summary_button:
-            if not summary_receiver_name.strip():
-                st.warning("⚠️ Please enter the recipient's name.")
-            elif not summary_receiver_email.strip():
-                st.warning("⚠️ Please enter the recipient's email address.")
-            else:
-                # Create formatted summary with receiver details
-                formatted_summary = f"To: {summary_receiver_name}\nEmail: {summary_receiver_email}\n\n---\n\nSummary:\n\n{st.session_state.generated_summary}"
-                
-                st.success(f"✅ Summary prepared for: {summary_receiver_name} ({summary_receiver_email})")
-                
-                # Show formatted summary
-                st.markdown("### 📝 Summary to Send:")
-                st.code(formatted_summary, language="text")
-                
-                # Download option
-                st.download_button(
-                    label="⬇️ Download Summary",
-                    data=formatted_summary,
-                    file_name=f"summary_for_{summary_receiver_name.replace(' ', '_')}.txt",
-                    mime="text/plain"
-                )
-        
-        # Copy to clipboard
-        if copy_summary_button:
-            st.success("📋 Summary copied!")
-            st.download_button(
-                label="📄 Download Summary",
-                data=st.session_state.generated_summary,
-                file_name="summary.txt",
-                mime="text/plain"
-            )
-        
-        # Show metadata
-        with st.expander("📊 Details"):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Summary length", f"{len(st.session_state.generated_summary)} chars")
-            with col2:
-                st.button("🔄 Generate New Summary", key="new_summary_btn")
-                if st.session_state.get("new_summary_btn"):
-                    st.session_state.generated_summary = None
-                    st.rerun()
-
-# TAB 2: EMAIL RESPONSE GENERATOR
-with tab2:
-    st.markdown("### Generate Email Response")
-    st.markdown("Paste or type the email you want to respond to:")
-    
-    email_text = st.text_area(
-        "Email to respond to:",
-        height=200,
-        placeholder="Paste the email you received here...",
-        label_visibility="collapsed",
-        key="email_input"
-    )
-    
-    # Create columns for buttons
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        generate_button = st.button("✉️ Generate Response", type="primary", use_container_width=True, key="generate_btn")
     
     with col2:
-        clear_email_button = st.button("🗑️ Clear", key="clear_email_btn")
-    
-    # Clear functionality
-    if clear_email_button:
-        st.rerun()
-    
-    # Generate email response functionality
-    if generate_button:
-        if not email_text.strip():
-            st.warning("⚠️ Please enter an email to respond to.")
-        else:
-            with st.spinner("🔄 Generating email response..."):
-                try:
-                    # Prepare the prompt
-                    length_instruction = email_length_mapping[email_length]
-                    tone_instruction = email_tone_mapping[email_tone]
-                    
-                    system_prompt = f"""You are a professional email writer. 
-Write an email response that is {tone_instruction}.
-{length_instruction}
-Be polite, clear, and address all points from the original email."""
-                    
-                    # Call OpenRouter API
-                    response = client.chat.completions.create(
-                        model="stepfun/step-3.5-flash:free",
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": system_prompt
-                            },
-                            {
-                                "role": "user",
-                                "content": f"Original email:\n\n{email_text}\n\nPlease generate an appropriate response."
-                            }
-                        ],
-                        temperature=0.7,
-                        top_p=0.9,
-                        max_tokens=600
-                    )
-                    
-                    # Display results
-                    email_response = response.choices[0].message.content
-                    
-                    # Store in session state for later use
-                    st.session_state.generated_letter = email_response
-                    
-                    st.markdown("---")
-                    st.markdown("### 📧 Generated Email Response:")
-                    st.info(email_response)
-                    
-                    # Input for receiver name
-                    st.markdown("### 📬 Email Details:")
-                    letter_receiver_name = st.text_input(
-                        "Letter receiver's name:",
-                        placeholder="Enter the name of the letter receiver...",
-                        key="letter_receiver_name"
-                    )
-                    
-                    # Send button
-                    col1, col2, col3 = st.columns([1, 1, 2])
-                    
-                    with col1:
-                        send_button = st.button("📤 Send Letter", type="primary", key="send_btn")
-                    
-                    with col2:
-                        copy_button = st.button("📋 Copy Letter", key="copy_btn")
-                    
-                    # Send functionality
-                    if send_button:
-                        if not letter_receiver_name.strip():
-                            st.warning("⚠️ Please enter the receiver's name.")
-                        else:
-                            # Create formatted letter with receiver name
-                            formatted_letter = f"To: {letter_receiver_name}\n\n{email_response}"
-                            
-                            # Here you can add actual sending logic (email API, database, etc.)
-                            st.success(f"✅ Letter prepared to send to: {letter_receiver_name}")
-                            
-                            # Show formatted letter
-                            st.markdown("### 📝 Formatted Letter to Send:")
-                            st.code(formatted_letter, language="text")
-                            
-                            # Download option
-                            st.download_button(
-                                label="⬇️ Download Letter",
-                                data=formatted_letter,
-                                file_name=f"letter_to_{letter_receiver_name.replace(' ', '_')}.txt",
-                                mime="text/plain"
-                            )
-                    
-                    # Copy to clipboard button
-                    if copy_button:
-                        st.success("📋 Letter copied to clipboard!")
-                        st.download_button(
-                            label="📄 Download Letter",
-                            data=email_response,
-                            file_name="email_response.txt",
-                            mime="text/plain"
-                        )
-                    
-                    # Show metadata
-                    with st.expander("📊 Details"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Original email length", f"{len(email_text)} chars")
-                        with col2:
-                            st.metric("Response length", f"{len(email_response)} chars")
-                    
-                except Exception as e:
-                    st.error(f"❌ Error generating email response: {str(e)}")
-                    st.markdown("**Please ensure:**")
-                    st.markdown("- Your OpenRouter API key is valid")
-                    st.markdown("- You have enough API credits")
-                    st.markdown("- You have internet connectivity")
-    
-    # Display stored letter if it exists (persistent display for input fields)
-    elif st.session_state.generated_letter:
-        st.markdown("---")
-        st.markdown("### 📧 Generated Email Response:")
-        st.info(st.session_state.generated_letter)
-        
-        # Input for receiver name (persists after filling)
-        st.markdown("### 📬 Email Details:")
         letter_receiver_name = st.text_input(
             "Letter receiver's name:",
-            placeholder="Enter the name of the letter receiver...",
-            key="letter_receiver_name_persist"
+            placeholder="Enter letter receiver's name...",
+            key="letter_receiver_name"
         )
-        
-        # Send button
-        col1, col2, col3 = st.columns([1, 1, 2])
-        
-        with col1:
-            send_button = st.button("📤 Send Letter", type="primary", key="send_btn_persist")
-        
-        with col2:
-            copy_button = st.button("📋 Copy Letter", key="copy_btn_persist")
-        
-        # Send functionality
-        if send_button:
-            if not letter_receiver_name.strip():
-                st.warning("⚠️ Please enter the receiver's name.")
-            else:
-                # Create formatted letter with receiver name
-                formatted_letter = f"To: {letter_receiver_name}\n\n{st.session_state.generated_letter}"
-                
-                # Here you can add actual sending logic (email API, database, etc.)
-                st.success(f"✅ Letter prepared to send to: {letter_receiver_name}")
-                
-                # Show formatted letter
-                st.markdown("### 📝 Formatted Letter to Send:")
-                st.code(formatted_letter, language="text")
-                
-                # Download option
-                st.download_button(
-                    label="⬇️ Download Letter",
-                    data=formatted_letter,
-                    file_name=f"letter_to_{letter_receiver_name.replace(' ', '_')}.txt",
-                    mime="text/plain"
-                )
-        
-        # Copy to clipboard
-        if copy_button:
-            st.success("📋 Letter copied!")
+    
+    summary_receiver_email = st.text_input(
+        "Recipient's email address:",
+        placeholder="name@example.com",
+        key="summary_receiver_email"
+    )
+    
+    if st.button("📤 Send Summary by Email", type="primary", use_container_width=True):
+        if not summary_receiver_name.strip():
+            st.warning("⚠️ Please enter the recipient's name.")
+        elif not letter_receiver_name.strip():
+            st.warning("⚠️ Please enter the letter receiver's name.")
+        elif not summary_receiver_email.strip():
+            st.warning("⚠️ Please enter the recipient's email address.")
+        else:
+            # Use rewritten summary if available, otherwise use original
+            final_summary = st.session_state.rewritten_summary or st.session_state.generated_summary
+            
+            formatted_email = f"""Dear {letter_receiver_name},
+
+To: {summary_receiver_name}
+Email: {summary_receiver_email}
+
+---
+
+Summary:
+
+{final_summary}
+
+---
+
+Best regards"""
+            
+            st.success(f"✅ Summary prepared for: {summary_receiver_name} ({summary_receiver_email})")
+            
+            st.markdown("### 📧 Email Preview:")
+            st.code(formatted_email, language="text")
+            
             st.download_button(
-                label="📄 Download Letter",
-                data=st.session_state.generated_letter,
-                file_name="email_response.txt",
+                label="⬇️ Download Email",
+                data=formatted_email,
+                file_name=f"summary_for_{summary_receiver_name.replace(' ', '_')}.txt",
                 mime="text/plain"
             )
-        
-        # Show metadata
-        with st.expander("📊 Details"):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Response length", f"{len(st.session_state.generated_letter)} chars")
-            with col2:
-                if st.button("🔄 Generate New Response"):
-                    st.session_state.generated_letter = None
-                    st.rerun()
+    
+    # Clear button
+    if st.button("🗑️ Clear All", use_container_width=True):
+        st.session_state.generated_summary = None
+        st.session_state.rewritten_summary = None
+        st.session_state.original_text = None
+        st.session_state.show_rewrite_options = False
+        st.rerun()
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: gray; font-size: 12px;'>
-    Powered by OpenRouter | Using Step 3.5 Flash Model | Text Summarizer & Email Response Generator
+    Powered by OpenRouter (Summary) & Ollama (Rewriting) | 
+    Using Step 3.5 Flash & Gemma3:4b Models
 </div>
 """, unsafe_allow_html=True)
