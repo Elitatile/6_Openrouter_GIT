@@ -2,8 +2,37 @@
 - must be contained in single python file
 - must use openrouter model stepfun/step-3.5-flash:free to make a summary of user provided text.
 - must use streamlit for a web interface 
+- must use ollama gemma3:4b model
 - must take openrouter API key from a file named "openrouter_api_key.txt".
-- must show the summary generated
-- must be the place where to write a summary receivers name
-- must be a button to send a generated summary by email
-- must be the place where to write the letter receivers name
+- must generate the summary
+- there must not be any "System status" displayed.
+- there must not be any action status displayed.
+- a summary text must editable by the user.
+- below the summary generated, there must be two buttons:
+- the buttons must be red, the hover must be green.
+- one button: to „Generate from scratch“ 
+- the model must regenerate the summary once again after the button „Generate from scratch“ is pressed
+- the second button: to „Rewrite my draft“
+- the button to „Rewrite my draft" must be red, the hover must be green.
+- the button to "Rewrite my draft" must have dropdown options 
+- options must be in a dropdown menu
+- the user must choose on an option and press "Apply" button
+- the options must be written in words
+- options: Shorten, Expand, More polite, More direct, Fix grammar.
+- the model must rewrite the summary according to the option chosen:
+- the model must rewrite the summary in a shorter way if the option "Shorten" is chosen.
+- the model must rewrite the summary in a longer way if the option "Expand" is chosen.
+- the model must rewrite the summary in a more polite way if the option "More polite" is chosen.
+- the model must rewrite the summary in a more assertive way if the option "More direct" is chosen.
+- the model must rewrite the summary in a shorter way if the option "Shorten" is chosen.
+- the model must fix grammar of the the summary if the option "Fix grammar" is chosen.
+- The result must be the same as the option chosen.
+- the result must not include any AI comments or questions.
+- the result must be in a separate tab.
+- the result must be editable by the user.
+- The text of a result must fit in the tab, justified.
+- The Final result must be on the same page below the buttons.
+- there must be a button to send The Final result by email.
+- there must be the place where to write the email receiver's name.
+there must be the place where to write the email receiver's email address.
+
